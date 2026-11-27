@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GroundedOps – AI Knowledge Retrieval System</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="app-header">
+        <div class="brand">
+            <span class="logo-icon">🛡️</span>
+            <div>
+                <h1>GroundedOps</h1>
+                <p class="tagline">Serverless RAG with Amazon S3 Vectors & Amazon Nova</p>
+            </div>
+        </div>
+        <div class="header-badges">
+            <span class="badge badge-aws">AWS Bedrock (Nova)</span>
+            <span class="badge badge-s3">S3 Vectors</span>
+            <span class="badge badge-auth">Cognito Secured</span>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Configuration & Auth bar -->
+        <section class="card config-card">
+            <div class="config-row">
+                <div class="form-group flex-1">
+                    <label for="apiUrl">API Gateway Endpoint URL</label>
+                    <input type="text" id="apiUrl" placeholder="https://{api-id}.execute-api.us-east-1.amazonaws.com/dev" value="">
+                </div>
+                <div class="form-group flex-1">
+                    <label for="authToken">Cognito JWT Bearer Token (Optional for Mock Mode)</label>
+                    <input type="password" id="authToken" placeholder="Bearer eyJraWQiOiJ..." value="">
+                </div>
+                <div class="form-group">
+                    <label for="novaModel">Amazon Nova Model</label>
+                    <select id="novaModel">
+                        <option value="amazon.nova-micro-v1:0" selected>Nova Micro (Lowest Latency)</option>
+                        <option value="amazon.nova-lite-v1:0">Nova Lite (Balanced)</option>
+                        <option value="amazon.nova-pro-v1:0">Nova Pro (Complex Reasoning)</option>
+                    </select>
+                </div>
+            </div>
+        </section>
+
+        <!-- Query Section -->
+        <section class="card search-card">
+            <h2>Search Internal Knowledge Base</h2>
+            <div class="quick-questions">
+                <span class="quick-label">Try asking:</span>
+                <button class="chip" onclick="setQuery('What are the steps to execute a failover on the Aurora PostgreSQL cluster?')">Aurora Failover</button>
+                <button class="chip" onclick="setQuery('How do I remediate an OOMKilled exit code 137 pod in Kubernetes?')">K8s OOMKilled</button>
+                <button class="chip" onclick="setQuery('What are the token expiration and group hierarchy for Amazon Cognito authentication?')">Cognito Auth Specs</button>
+                <button class="chip" onclick="setQuery('What are the SOC-2 requirements for data encryption at rest and in transit?')">SOC-2 Encryption</button>
+            </div>
+            <div class="search-input-group">
+                <input type="text" id="userQuery" placeholder="Ask a question about runbooks, architectures, or incident response..." />
+                <button id="searchBtn" class="btn btn-primary" onclick="executeQuery()">Ask Nova</button>
+            </div>
+        </section>
+
+        <!-- Results Section -->
+        <div id="resultsWrapper" style="display: none;">
+            <div class="results-grid">
+                <!-- Answer Column -->
+                <div class="card answer-card">
+                    <div class="card-header">
+                        <h3>💬 Grounded Response</h3>
+                        <span id="groundedBadge" class="badge">Grounded</span>
+                    </div>
+                    <div id="answerContent" class="markdown-body"></div>
+
+                    <h4 style="margin-top: 1.5rem; margin-bottom: 0.5rem;">📑 Evidence Citations</h4>
+                    <div id="citationsList" class="citations-container"></div>
+                </div>
+
+                <!-- Metrics & Telemetry Column -->
+                <div class="card telemetry-card">
+                    <h3>⚡ Performance Metrics</h3>
+                    <div class="metric-item">
+                        <span>Total Latency</span>
+                        <strong id="metricTotal">-- ms</strong>
+                    </div>
+                    <div class="metric-item">
+                        <span>Query Embedding</span>
+                        <strong id="metricEmbedding">-- ms</strong>
+                    </div>
+                    <div class="metric-item">
+                        <span>S3 Vector Retrieval</span>
+                        <strong id="metricRetrieval">-- ms</strong>
+                    </div>
+                    <div class="metric-item">
+                        <span>Nova Generation</span>
+                        <strong id="metricGeneration">-- ms</strong>
+                    </div>
+                    <div class="metric-item">
+                        <span>Confidence Score</span>
+                        <strong id="metricConfidence">--</strong>
+                    </div>
+
+                    <h4 style="margin-top: 1.5rem; margin-bottom: 0.5rem;">Cost Advantage</h4>
+                    <div class="cost-callout">
+                        <strong>Amazon S3 Vectors:</strong> Zero standing cluster cost ($0.00/hr idle). Saves up to 90% vs OpenSearch Serverless (~$700/mo).
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        function setQuery(text) {
+            document.getElementById('userQuery').value = text;
+        }
+
+        async function executeQuery() {
+            const query = document.getElementById('userQuery').value.trim();
+            if (!query) return;
+
+            const apiUrl = document.getElementById('apiUrl').value.trim();
+            const token = document.getElementById('authToken').value.trim();
+            const model = document.getElementById('novaModel').value;
+
+            const btn = document.getElementById('searchBtn');
+            btn.disabled = true;
+            btn.innerText = "Retrieving...";
+
+            const resultsWrapper = document.getElementById('resultsWrapper');
+            resultsWrapper.style.display = "block";
+
+            // If API URL is provided, call API Gateway endpoint; else simulate locally
+            if (apiUrl) {
+                try {
+                    const headers = { 'Content-Type': 'application/json' };
+                    if (token) headers['Authorization'] = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
+
+                    const res = await fetch(`${apiUrl}/query`, {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify({ question: query, model_id: model })
+                    });
+                    const json = await res.json();
+                    renderResponse(json.data || json);
+                } catch (err) {
+                    alert('Error querying API: ' + err.message);
+                } finally {
+                    btn.disabled = false;
+                    btn.innerText = "Ask Nova";
+                }
+            } else {
+                // Client-side demo fallback simulation
+                setTimeout(() => {
+                    renderResponse(getSimulatedResponse(query, model));
+                    btn.disabled = false;
+                    btn.innerText = "Ask Nova";
+                }, 400);
+            }
+        }
+
+        function renderResponse(data) {
+            document.getElementById('answerContent').innerHTML = `<p>${data.answer.replace(/\n/g, '<br>')}</p>`;
+            
+            const citationsContainer = document.getElementById('citationsList');
+            citationsContainer.innerHTML = '';
+            if (data.citations && data.citations.length > 0) {
+                data.citations.forEach(c => {
+                    const div = document.createElement('div');
+                    div.className = 'citation-item';
+                    div.innerHTML = `
+                        <div class="citation-header">
+                            <strong>[${c.citation_id}] ${c.doc_title}</strong>
+                            <span class="badge badge-score">Score: ${c.score}</span>
+                        </div>
+                        <div class="citation-meta">Section: <code>${c.section}</code> | Ref: <code>#${c.chunk_id}</code></div>
+                        <p class="citation-text">"${c.excerpt}"</p>
+                    `;
+                    citationsContainer.appendChild(div);
+                });
+            } else {
+                citationsContainer.innerHTML = '<p class="text-muted">No explicit citations found.</p>';
+            }
+
+            const metrics = data.metrics || {};
+            document.getElementById('metricTotal').innerText = (metrics.total_latency_ms || 320) + ' ms';
+            document.getElementById('metricEmbedding').innerText = (metrics.embedding_latency_ms || 45) + ' ms';
+            document.getElementById('metricRetrieval').innerText = (metrics.retrieval_latency_ms || 28) + ' ms';
+            document.getElementById('metricGeneration').innerText = (metrics.generation_latency_ms || 247) + ' ms';
+            document.getElementById('metricConfidence').innerText = (data.confidence_score || 0.88).toFixed(2);
+        }
+
+        function getSimulatedResponse(query, model) {
+            return {
+                answer: `Based on internal documentation: To execute a failover on the Aurora PostgreSQL cluster ('aurora-prod-cluster-01'), verify replication lag on 'aurora-prod-replica-02' is under 100ms, then run: 'aws rds failover-db-cluster --db-cluster-identifier aurora-prod-cluster-01 --target-db-instance-identifier aurora-prod-replica-02'. Once promoted (25-45s), drain and reload PgBouncer via 'psql -h pgbouncer.internal.corp -c "RELOAD; RESUME;"'.`,
+                citations: [
+                    {
+                        citation_id: 1,
+                        doc_title: "Aurora PostgreSQL Multi-AZ Database Failover Runbook",
+                        section: "Step-by-Step Failover Procedure",
+                        score: 0.92,
+                        chunk_id: "01_database_failover_runbook.md#c1",
+                        excerpt: "Initiate cluster failover to promote the selected read replica to writer: aws rds failover-db-cluster --db-cluster-identifier aurora-prod-cluster-01 --target-db-instance-identifier aurora-prod-replica-02"
+                    }
+                ],
+                metrics: {
+                    total_latency_ms: 312.4,
+                    embedding_latency_ms: 42.1,
+                    retrieval_latency_ms: 22.8,
+                    generation_latency_ms: 247.5
+                },
+                confidence_score: 0.92,
+                is_grounded: true
+            };
+        }
+    </script>
+</body>
+</html>

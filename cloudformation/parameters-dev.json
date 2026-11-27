@@ -1,0 +1,22 @@
+[
+  {
+    "ParameterKey": "Environment",
+    "ParameterValue": "dev"
+  },
+  {
+    "ParameterKey": "EmbeddingModelId",
+    "ParameterValue": "amazon.titan-embed-text-v2:0"
+  },
+  {
+    "ParameterKey": "NovaModelId",
+    "ParameterValue": "amazon.nova-micro-v1:0"
+  },
+  {
+    "ParameterKey": "ChunkSize",
+    "ParameterValue": "800"
+  },
+  {
+    "ParameterKey": "ChunkOverlap",
+    "ParameterValue": "150"
+  }
+]
