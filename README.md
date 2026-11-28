@@ -2,25 +2,29 @@
 
 [![AWS Serverless](https://img.shields.io/badge/AWS-Serverless-orange?logo=amazon-aws)](https://aws.amazon.com/)
 [![Amazon Bedrock](https://img.shields.io/badge/Amazon%20Bedrock-Nova%20%7C%20Titan-blue?logo=amazon-aws)](https://aws.amazon.com/bedrock/)
-[![S3 Vectors](https://img.shields.io/badge/Storage-S3%20Vectors-green?logo=amazons3)](https://aws.amazon.com/s3/)
+[![S3 Vectors](https://img.shields.io/badge/Storage-S3%20Vectors%20%2B%20BM25-green?logo=amazons3)](https://aws.amazon.com/s3/)
 [![Cognito Secured](https://img.shields.io/badge/Security-Cognito%20%2B%20IAM-red?logo=jsonwebtokens)](https://aws.amazon.com/cognito/)
 [![IaC CloudFormation](https://img.shields.io/badge/IaC-CloudFormation%20%2F%20SAM-lightgrey?logo=cloudformation)](https://aws.amazon.com/cloudformation/)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue?logo=python)](https://www.python.org/)
-[![Test Suite](https://img.shields.io/badge/Tests-16%20Passed-brightgreen?logo=pytest)](tests/)
+[![Test Suite](https://img.shields.io/badge/Tests-22%20Passed-brightgreen?logo=pytest)](tests/)
 
 > **GroundedOps** is an enterprise-grade, serverless Retrieval-Augmented Generation (RAG) system built with **Amazon S3**, **AWS Lambda**, **Amazon Bedrock (Amazon Nova)**, and **S3 Vectors**. It provides strictly evidence-based, verifiable answers from internal documentation, engineering runbooks, and architectural specifications with zero standing infrastructure costs.
 
 ---
 
-## 🎯 Key Capabilities
+## 🎯 Key Capabilities & Upgrades
 
-- **Serverless RAG Pipeline**: Fully automated document chunking, embedding generation with Amazon Titan Embeddings v2, and grounded synthesis via Amazon Bedrock Amazon Nova (Micro, Lite, and Pro).
-- **S3 Vectors Architecture**: Replaces expensive managed vector databases (OpenSearch Serverless, Pinecone) with an optimized, serverless vector store native to Amazon S3—reducing standing hosting costs by over **90%** ($0.00/month idle cost).
-- **Strict Grounding & Hallucination Refusal**: Enforces deterministic prompt templates, contextual chunk headers, and strict refusal rules. If internal documentation does not contain the answer, GroundedOps safely refuses to speculate.
-- **Evidence Citations**: Every generated response includes verifiable inline citations, document IDs, section names, chunk identifiers, and similarity confidence scores.
-- **Enterprise Security**: Secured perimeter with **Amazon API Gateway**, **Amazon Cognito User Pools** (JWT token authorizer with RBAC groups: `Admins`, `Engineers`, `Auditors`), and least-privilege **AWS IAM** execution roles.
-- **Infrastructure as Code (IaC)**: Turnkey deployment via AWS CloudFormation / SAM templates.
-- **Developer Tools**: Production-ready Python CLI, interactive Streamlit dashboard, and standalone web client.
+- **⚡ Hybrid Search Engine**: Fuses dense semantic vector embeddings (Amazon Bedrock Titan v2) with sparse lexical keyword matching (**BM25**) via **Reciprocal Rank Fusion (RRF)**—delivering pinpoint accuracy for operational codes, cluster IDs, and error numbers.
+- **🎯 Maximal Marginal Relevance (MMR)**: Diversity reranker suppresses near-duplicate chunks from the same paragraph to maximize context coverage.
+- **💬 Conversational Memory**: Supports multi-turn chat sessions with query context history across both the CLI and web dashboard.
+- **🛡️ Secret Sanitizer & PII Guard**: Automatically scans and masks AWS Access Keys (`AKIA...`), bearer tokens, database passwords, and internal IP addresses before queries reach the model or logs.
+- **📊 CloudWatch Telemetry Emitter**: Automatically emits operational metrics (`QueryTotalLatency`, `RetrievalLatency`, `ConfidenceScore`, `HallucinationRefusals`) under `GroundedOps/RAG`.
+- **💰 S3 Vectors Architecture**: Replaces expensive managed vector databases (OpenSearch Serverless, Pinecone) with an optimized, serverless vector store native to Amazon S3—reducing standing hosting costs by over **90%** ($0.00/month idle cost).
+- **🚫 Strict Grounding & Hallucination Refusal**: Enforces deterministic prompt templates, contextual chunk headers, and strict refusal rules. If internal documentation does not contain the answer, GroundedOps safely refuses to speculate.
+- **📑 Verifiable Evidence Citations**: Every generated response includes verifiable inline citations, document IDs, section names, chunk identifiers, and similarity confidence scores.
+- **🔒 Enterprise Zero-Trust Security**: Secured perimeter with **Amazon API Gateway**, **Amazon Cognito User Pools** (JWT token authorizer with RBAC groups: `Admins`, `Engineers`, `Auditors`), and least-privilege **AWS IAM** execution roles.
+- **🤖 Real-Time Streaming Output**: Native support for Amazon Bedrock ConverseStream API token generation.
+- **🔄 CI/CD Automation**: GitHub Actions workflow running tests, coverage, and validation on every pull request.
 
 ---
 
@@ -39,16 +43,19 @@ flowchart TD
         F --> F3["index/all_vectors.json"]
     end
 
-    subgraph Query["Grounded Query Pipeline"]
+    subgraph Query["Hybrid Grounded Query Pipeline"]
         G["Engineer / On-Call Operator"] -->|Cognito Bearer JWT| H["Amazon API Gateway"]
         H -->|Cognito Authorizer| I["AWS Lambda: QueryHandler"]
-        I --> J["Embed Query (Bedrock Titan)"]
-        J --> K["S3 Vectors Cosine Similarity Search"]
-        F3 -.->|Top-K Chunks| K
-        K --> L["Context Assembly & Grounding Rules"]
-        L --> M["Amazon Bedrock: Amazon Nova"]
-        M --> N["Citation & Evidence Extraction"]
-        N --> O["Grounded Response + Telemetry"]
+        I --> J["Sanitizer: Secret & IP Redactor"]
+        J --> K1["Embed Query (Bedrock Titan)"]
+        J --> K2["BM25 Lexical Keyword Scorer"]
+        F3 -.->|Retrieve Chunks| K1
+        F3 -.->|Tokenize Chunks| K2
+        K1 & K2 --> L["Reciprocal Rank Fusion (RRF) & MMR"]
+        L --> M["Context Assembly & Strict Grounding"]
+        M --> N["Amazon Bedrock: Amazon Nova"]
+        N --> O["Citation & Evidence Extraction"]
+        O --> P["CloudWatch Metrics Emitter"]
         O --> H --> G
     end
 ```
@@ -74,6 +81,9 @@ Traditional RAG systems require continuous cluster provisioning, resulting in hi
 
 ```
 GroundedOps/
+├── .github/
+│   └── workflows/
+│       └── ci.yml               # GitHub Actions CI automated test workflow
 ├── cloudformation/
 │   ├── template.yaml            # AWS CloudFormation / SAM infrastructure template
 │   └── parameters-dev.json      # Development deployment parameters
@@ -83,19 +93,23 @@ GroundedOps/
 │   │   ├── query_handler.py     # API Gateway grounded query Lambda handler
 │   │   └── health_handler.py    # System health & diagnostics Lambda handler
 │   ├── core/
+│   │   ├── bm25.py              # Okapi BM25 sparse lexical keyword search engine
+│   │   ├── reranker.py          # Reciprocal Rank Fusion (RRF) & MMR diversity filter
 │   │   ├── chunker.py           # Markdown & section-aware text chunker
 │   │   ├── embeddings.py        # Amazon Bedrock embedding generator (Titan / Nova)
-│   │   ├── vector_store.py      # S3 Vectors store & cosine similarity search engine
-│   │   ├── nova_client.py       # Amazon Bedrock Amazon Nova client & citation parser
-│   │   └── rag_pipeline.py      # Coordinated end-to-end RAG orchestrator
+│   │   ├── vector_store.py      # S3 Vectors store & hybrid search engine
+│   │   ├── nova_client.py       # Amazon Bedrock Amazon Nova client & streaming parser
+│   │   └── rag_pipeline.py      # Coordinated end-to-end hybrid RAG orchestrator
 │   └── utils/
+│       ├── sanitizer.py         # Secret, PII & internal IP redactor
+│       ├── telemetry.py         # CloudWatch custom metrics emitter
 │       ├── logger.py            # Structured JSON CloudWatch logger
 │       ├── response.py          # API Gateway CORS response formatter
 │       └── auth_validator.py    # Cognito claims & role-based access validator
 ├── cli/
-│   └── groundedops_cli.py       # Developer & admin CLI tool
+│   └── groundedops_cli.py       # Developer & admin CLI tool (Query, Ingest, Chat)
 ├── web/
-│   ├── app.py                   # Streamlit interactive dashboard
+│   ├── app.py                   # Streamlit conversational dashboard
 │   ├── static/
 │   │   ├── index.html           # Standalone HTML5/JS web application
 │   │   └── style.css            # Custom CSS styling
@@ -112,7 +126,7 @@ GroundedOps/
 │   └── run_local_demo.sh        # Complete local demonstration script
 ├── tests/
 │   ├── conftest.py              # Pytest fixtures & Moto S3 mocks
-│   ├── unit/                    # Unit tests for core modules & handlers
+│   ├── unit/                    # 21 unit tests (BM25, RRF, MMR, Sanitizer, etc.)
 │   └── integration/             # Integration tests for end-to-end grounding
 ├── template.yaml                # Root SAM deployment template
 ├── Makefile                     # Build & test automation targets
@@ -138,52 +152,23 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 
-# Run complete test suite (all 16 tests passing)
+# Run complete test suite (all 22 tests passing)
 pytest -v
 ```
 
 ### 2. Run the Local Demonstration
 
-Execute the automated local demonstration script to ingest sample documentation, index into S3 Vectors, and run grounded queries with citation extraction:
+Execute the automated local demonstration script to ingest sample documentation, index into S3 Vectors, and run hybrid queries with citation extraction:
 
 ```bash
 ./scripts/run_local_demo.sh
-```
-
-Sample output:
-```text
-==========================================================
- Starting GroundedOps Local Demonstration
-==========================================================
-[Step 1] Ingesting Internal Engineering Documentation...
-  ✓ 01_database_failover_runbook.md -> 8 chunks stored in S3 Vectors
-  ✓ 04_security_compliance_soc2.md -> 4 chunks stored in S3 Vectors
-  ✓ 02_microservices_architecture_spec.md -> 6 chunks stored in S3 Vectors
-  ✓ 03_kubernetes_incident_response.md -> 7 chunks stored in S3 Vectors
-
-[Step 2] Listing Indexed Documents in S3 Vectors Store...
-Document ID                         Title                                    Chunks  
--------------------------------------------------------------------------------------
-01_database_failover_runbook.md     Aurora PostgreSQL Multi-AZ Database Fa   8       
-04_security_compliance_soc2.md      Cloud Security & SOC-2 Type II Complia   4       
-02_microservices_architecture_spec.md Enterprise Microservices Architecture    6       
-03_kubernetes_incident_response.md  EKS Kubernetes Incident Response Stand   7       
-
-[Step 3] Query: What are the exact commands to failover the Aurora PostgreSQL cluster?
---- Grounded Answer ---
-Based on internal documentation 'Aurora PostgreSQL Multi-AZ Database Failover Runbook' [Doc: Aurora PostgreSQL Multi-AZ Database Failover Runbook | Section: 1. Overview and Incident Criteria | Ref: #01_database_failover_runbook.md#c1]:
-
-This runbook defines the emergency operational procedure for handling primary database failures...
-
---- Evidence Citations ---
-  [1] Aurora PostgreSQL Multi-AZ Database Failover Runbook | Section: 1. Overview and Incident Criteria | Score: 0.2752 | Chunk: #01_database_failover_runbook.md#c1
 ```
 
 ---
 
 ## 💻 CLI Usage Guide
 
-The `groundedops_cli.py` tool provides command-line control over ingestion and retrieval:
+The `groundedops_cli.py` tool provides command-line control over ingestion, hybrid querying, and interactive chat:
 
 ```bash
 # Ingest a single file
@@ -192,11 +177,14 @@ python3 cli/groundedops_cli.py ingest-file sample_docs/01_database_failover_runb
 # Ingest an entire directory of runbooks
 python3 cli/groundedops_cli.py ingest-dir sample_docs/
 
-# Query with Amazon Nova
+# Query with Hybrid Search (BM25 + S3 Vectors RRF)
 python3 cli/groundedops_cli.py query "How do I fix an exit code 137 OOMKilled error?"
 
-# Query specifying model and top-k
-python3 cli/groundedops_cli.py query "What is the token expiration for Cognito?" --model amazon.nova-lite-v1:0 --top-k 3
+# Query with MMR Diversity Filtering
+python3 cli/groundedops_cli.py query "What is the token expiration for Cognito?" --mmr --top-k 4
+
+# Interactive Conversational Chat Session (Multi-Turn Memory)
+python3 cli/groundedops_cli.py chat --model amazon.nova-micro-v1:0
 
 # List indexed documents in S3 Vectors
 python3 cli/groundedops_cli.py list-docs
@@ -207,17 +195,18 @@ python3 cli/groundedops_cli.py stats
 
 ---
 
-## 🌐 Web Dashboard
+## 🌐 Web Dashboard & Chat Assistant
 
 ### Streamlit Application
 ```bash
 streamlit run web/app.py
 ```
 Features:
-- Real-time question answering with inline citation badges.
-- Model selector: Amazon Nova Micro, Nova Lite, and Nova Pro.
-- Latency waterfall metrics (Embedding vs S3 Retrieval vs Nova Generation).
-- Document ingestion portal and S3 Vectors catalog viewer.
+- **Conversational Assistant Tab**: Multi-turn chat interface with chat memory and collapsible verified citations.
+- **Search Engine Toggle**: Switch between **Hybrid Search (BM25 + S3 Vectors RRF)** and **Dense Vectors Only**.
+- **MMR Diversity Filter**: Suppresses redundant chunks in real time.
+- **Model Selector**: Switch between Amazon Nova Micro, Nova Lite, and Nova Pro.
+- **Telemetry Waterfall**: Latency breakdown across Embedding, S3/BM25 retrieval, and Nova synthesis.
 
 ### Standalone HTML5 Client
 Serve the zero-dependency web interface:
@@ -234,98 +223,36 @@ Open `http://localhost:8080` in your browser.
 Deploy the serverless stack (S3 Buckets, Cognito User Pool, IAM Roles, Lambda Functions, API Gateway):
 
 ```bash
-# Set your target AWS region
 export AWS_REGION="us-east-1"
-
-# Deploy via automated script
 ./scripts/deploy.sh dev
 ```
 
-Alternatively, deploy using AWS SAM CLI:
-```bash
-sam build
-sam deploy --guided
-```
-
 ### 2. Onboard a Cognito Test User
-Create an authenticated test engineer and obtain a JWT token:
-
 ```bash
 ./scripts/setup_cognito_user.sh dev engineer@internal.corp "GroundedOps2026!" "Engineers"
 ```
 
-### 3. Ingest Runbooks into Production S3
-Upload files directly to the created S3 Document Bucket, or ingest via API Gateway:
+### 3. Query the API with Hybrid Search & Chat History
 ```bash
 export API_URL="https://<api-id>.execute-api.us-east-1.amazonaws.com/dev"
 export TOKEN="<jwt-token-from-setup-script>"
 
-curl -X POST "${API_URL}/ingest" \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "doc_id": "01_database_failover_runbook.md",
-    "content": "# Aurora Database Failover Runbook\n\n## Failover Steps\nRun: aws rds failover-db-cluster..."
-  }'
-```
-
-### 4. Query the API
-```bash
 curl -X POST "${API_URL}/query" \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
     "question": "What is the command to failover the Aurora database?",
+    "search_mode": "hybrid",
+    "use_mmr": true,
     "top_k": 4
   }'
 ```
-
-Response:
-```json
-{
-  "status": "success",
-  "data": {
-    "question": "What is the command to failover the Aurora database?",
-    "answer": "Based on internal documentation: To execute a failover...",
-    "is_grounded": true,
-    "confidence_score": 0.89,
-    "model_id": "amazon.nova-micro-v1:0",
-    "citations": [
-      {
-        "citation_id": 1,
-        "doc_title": "Aurora PostgreSQL Multi-AZ Database Failover Runbook",
-        "section": "Step-by-Step Failover Procedure",
-        "score": 0.89,
-        "chunk_id": "01_database_failover_runbook.md#c3",
-        "excerpt": "aws rds failover-db-cluster --db-cluster-identifier aurora-prod-cluster-01..."
-      }
-    ],
-    "metrics": {
-      "total_latency_ms": 342.1,
-      "embedding_latency_ms": 41.5,
-      "retrieval_latency_ms": 18.2,
-      "generation_latency_ms": 282.4
-    }
-  }
-}
-```
-
----
-
-## 🔒 Security & IAM Specifications
-
-- **Amazon Cognito User Pool**: Pre-configured user pool with strict password policies and group mapping (`Admins` for ingestion/management, `Engineers` for queries).
-- **API Gateway Cognito Authorizer**: Pre-flight authorization verifies RS256 JWT signature and expiration before requests reach Lambda handlers.
-- **AWS IAM Least Privilege**:
-  - `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` restricted to `arn:aws:s3:::groundedops-documents-*` and `arn:aws:s3:::groundedops-vectors-*`.
-  - `bedrock:InvokeModel` and `bedrock:Converse` scoped to Amazon Nova and Titan foundation models.
-- **S3 Bucket Hardening**: Public access block enforced, SSE-AES256 encryption enabled, versioning configured.
 
 ---
 
 ## 🧪 Testing
 
-The repository includes a test suite covering unit tests, mocks, and integration flows:
+The repository includes 22 automated tests covering unit, mocks, and integration flows:
 
 ```bash
 # Run all tests
@@ -335,7 +262,10 @@ pytest -v
 pytest --cov=src --cov-report=term-missing tests/
 ```
 
-Test summary:
+Test breakdown:
+- `tests/unit/test_bm25.py`: Okapi BM25 keyword precision, IDF scoring, and tokenization.
+- `tests/unit/test_reranker.py`: Reciprocal Rank Fusion (RRF) and Maximal Marginal Relevance (MMR).
+- `tests/unit/test_sanitizer.py`: Automatic secret masking (AWS keys, tokens, IP addresses).
 - `tests/unit/test_chunker.py`: Heading extraction, sliding window segmentation, and boundary handling.
 - `tests/unit/test_embeddings.py`: L2 normalization, dimension checks, and feature hashing.
 - `tests/unit/test_vector_store.py`: S3 index storage, cosine similarity ranking, and catalog deletion.

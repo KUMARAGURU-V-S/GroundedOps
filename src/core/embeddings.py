@@ -21,6 +21,10 @@ STOP_WORDS = {
     "a", "an", "the", "and", "or", "in", "on", "at", "to", "for", "of", "with",
     "by", "is", "are", "was", "were", "what", "how", "when", "where", "which",
     "who", "why", "it", "this", "that", "these", "those", "from", "as", "be",
+    "i", "me", "my", "we", "our", "you", "your", "he", "him", "she", "her",
+    "they", "them", "their", "do", "does", "did", "have", "has", "had",
+    "can", "could", "will", "would", "shall", "should", "may", "might", "must",
+    "so", "no", "not", "but",
 }
 
 

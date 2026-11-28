@@ -2,7 +2,7 @@
 """
 GroundedOps CLI - Administrative & Developer Tool.
 Command-line interface to ingest internal documentation, query knowledge base,
-inspect S3 Vectors, and test evidence-grounded responses.
+inspect S3 Vectors, test evidence-grounded responses, and run conversational chat sessions.
 """
 
 import argparse
@@ -10,7 +10,7 @@ import glob
 import json
 import os
 import sys
-from typing import Optional
+from typing import List, Optional
 
 # Ensure project root is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -126,11 +126,21 @@ def cmd_query(args):
     if hasattr(args, "min_score") and args.min_score is not None:
         pipeline.similarity_threshold = args.min_score
     question = args.question
+    search_mode = getattr(args, "search_mode", "hybrid")
+    use_mmr = getattr(args, "mmr", False)
 
     print(cyan(f"\n[Question]: {bold(question)}"))
-    print(f"Retrieving grounded evidence using S3 Vectors and Amazon Nova ({pipeline.nova_client.model_id})...\n")
+    print(
+        f"Retrieving grounded evidence using S3 Vectors [{search_mode.upper()}] "
+        f"and Amazon Nova ({pipeline.nova_client.model_id})...\n"
+    )
 
-    res = pipeline.query(question=question, top_k=args.top_k)
+    res = pipeline.query(
+        question=question,
+        top_k=args.top_k,
+        search_mode=search_mode,
+        use_mmr=use_mmr,
+    )
 
     print(bold("--- Grounded Answer ---"))
     print(res["answer"])
@@ -152,10 +162,49 @@ def cmd_query(args):
     print(
         f"  Total: {metrics['total_latency_ms']}ms | "
         f"Embedding: {metrics['embedding_latency_ms']}ms | "
-        f"S3 Vector Retrieval: {metrics['retrieval_latency_ms']}ms | "
-        f"Nova Generation: {metrics['generation_latency_ms']}ms"
+        f"S3 Retrieval: {metrics['retrieval_latency_ms']}ms | "
+        f"Nova Generation: {metrics['generation_latency_ms']}ms | "
+        f"Engine: {metrics.get('search_mode', 'hybrid')}"
     )
     print(f"  Grounded: {res['is_grounded']} | Confidence: {res['confidence_score']}\n")
+
+
+def cmd_chat(args):
+    """Interactive multi-turn conversational terminal session."""
+    pipeline = get_pipeline(mock=args.mock, model_id=args.model)
+    print(bold(cyan("\n=======================================================")))
+    print(bold(cyan(" GroundedOps Interactive Terminal Session (Amazon Nova)")))
+    print(bold(cyan("=======================================================")))
+    print("Type your questions below. Enter 'exit' or 'quit' to end.\n")
+
+    chat_history: List[dict] = []
+    while True:
+        try:
+            user_input = input(bold("You > ")).strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nSession ended.")
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in ["exit", "quit", "q"]:
+            print("Session ended.")
+            break
+
+        res = pipeline.query(
+            question=user_input,
+            top_k=args.top_k,
+            chat_history=chat_history,
+        )
+
+        print("\n" + bold("Nova > ") + res["answer"])
+        if res["citations"]:
+            print(cyan(f"  [Cited: {len(res['citations'])} source chunks | Confidence: {res['confidence_score']:.2f}]"))
+        print()
+
+        # Update conversational memory
+        chat_history.append({"role": "user", "content": user_input})
+        chat_history.append({"role": "assistant", "content": res["answer"]})
 
 
 def cmd_list(args):
@@ -205,6 +254,17 @@ def main():
     p_query.add_argument("question", help="Question string")
     p_query.add_argument("--top-k", type=int, default=4, help="Top-K chunks to retrieve")
     p_query.add_argument(
+        "--search-mode",
+        choices=["hybrid", "dense"],
+        default="hybrid",
+        help="Retrieval engine: hybrid (BM25 + S3 Vectors RRF) or dense",
+    )
+    p_query.add_argument(
+        "--mmr",
+        action="store_true",
+        help="Enable Maximal Marginal Relevance diversity filtering",
+    )
+    p_query.add_argument(
         "--min-score",
         type=float,
         default=0.10,
@@ -216,6 +276,16 @@ def main():
         help="Nova model ID (e.g. amazon.nova-micro-v1:0, amazon.nova-lite-v1:0)",
     )
     p_query.set_defaults(func=cmd_query)
+
+    # Chat (Interactive multi-turn session)
+    p_chat = subparsers.add_parser("chat", help="Start interactive conversational chat session")
+    p_chat.add_argument("--top-k", type=int, default=4, help="Top-K chunks to retrieve")
+    p_chat.add_argument(
+        "--model",
+        default="amazon.nova-micro-v1:0",
+        help="Nova model ID",
+    )
+    p_chat.set_defaults(func=cmd_chat)
 
     # List
     p_list = subparsers.add_parser("list-docs", help="List all indexed documents")

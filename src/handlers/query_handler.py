@@ -58,6 +58,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     top_k = body.get("top_k", 4)
     filter_doc_id = body.get("filter_doc_id")
+    search_mode = body.get("search_mode", "hybrid")
+    chat_history = body.get("chat_history")
+    use_mmr = bool(body.get("use_mmr", False))
 
     try:
         top_k = int(top_k)
@@ -71,7 +74,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         result = pipeline.query(
             question=str(question).strip(),
             top_k=top_k,
+            search_mode=search_mode,
             filter_doc_id=filter_doc_id,
+            chat_history=chat_history,
+            use_mmr=use_mmr,
         )
 
         # 4. Attach request audit information

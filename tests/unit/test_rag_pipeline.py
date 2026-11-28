@@ -30,13 +30,26 @@ def test_rag_pipeline_end_to_end(mock_s3_bucket, sample_markdown):
     )
     assert ingest_res["chunks_count"] > 0
 
-    # 2. Query
-    query_res = pipeline.query("How to failover primary database?")
+    # 2. Dense Query
+    query_res = pipeline.query("How to failover primary database?", search_mode="dense")
     assert query_res["is_grounded"] is True
     assert len(query_res["citations"]) > 0
     assert query_res["metrics"]["total_latency_ms"] > 0
 
-    # 3. Stats
+    # 3. Hybrid Search Query (BM25 + S3 Vectors RRF)
+    hybrid_res = pipeline.query("How to failover primary database?", search_mode="hybrid", use_mmr=True)
+    assert hybrid_res["is_grounded"] is True
+    assert hybrid_res["metrics"]["search_mode"] == "hybrid"
+
+    # 4. Multi-turn Conversational Memory
+    history = [
+        {"role": "user", "content": "What is the RPO?"},
+        {"role": "assistant", "content": "The recovery point objective is 5 minutes."},
+    ]
+    chat_res = pipeline.query("What about failover steps?", chat_history=history)
+    assert chat_res["is_grounded"] is True
+
+    # 5. Stats
     stats = pipeline.get_pipeline_stats()
     assert stats["indexed_documents_count"] == 1
     assert stats["total_chunks_count"] == ingest_res["chunks_count"]

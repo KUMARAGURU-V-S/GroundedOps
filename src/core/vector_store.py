@@ -317,6 +317,114 @@ class S3VectorStore:
 
         return results
 
+    def hybrid_search(
+        self,
+        query: str,
+        query_vector: List[float],
+        top_k: int = 4,
+        alpha: float = 0.5,
+        min_score: float = 0.05,
+        filter_doc_id: Optional[str] = None,
+        use_mmr: bool = False,
+    ) -> List[SearchResult]:
+        """
+        Execute Hybrid Search combining Dense S3 Vectors with BM25 Lexical Keyword search
+        via Reciprocal Rank Fusion (RRF).
+        alpha: Weight given to dense vectors (1.0 = pure vector, 0.0 = pure BM25).
+        """
+        from .bm25 import BM25Okapi
+        from .reranker import reciprocal_rank_fusion, maximal_marginal_relevance
+
+        records = []
+        if filter_doc_id:
+            content = self._read_object(self._doc_key(filter_doc_id))
+            if content:
+                records = json.loads(content)
+        else:
+            content = self._read_object(self._combined_index_key())
+            if content:
+                records = json.loads(content)
+            else:
+                catalog = self._get_catalog()
+                for meta in catalog.get("documents", {}).values():
+                    d_content = self._read_object(meta["key"])
+                    if d_content:
+                        records.extend(json.loads(d_content))
+
+        if not records:
+            return []
+
+        # 1. Dense Vector Scoring (filter by min_score)
+        dense_ranked: List[Tuple[SearchResult, float]] = []
+        for r in records:
+            emb = r.get("embedding", [])
+            score = self._cosine_similarity(query_vector, emb)
+            if score >= min_score:
+                sr = SearchResult(
+                    chunk_id=r["chunk_id"],
+                    doc_id=r["doc_id"],
+                    doc_title=r.get("doc_title", r["doc_id"]),
+                    section=r.get("section", "General"),
+                    content=r["content"],
+                    score=round(score, 4),
+                    metadata=r.get("metadata", {}),
+                )
+                dense_ranked.append((sr, score))
+
+        dense_ranked.sort(key=lambda x: x[1], reverse=True)
+
+        # 2. BM25 Sparse Lexical Scoring (filter non-zero matches)
+        bm25 = BM25Okapi()
+        corpus_texts = [f"{r.get('doc_title', '')} {r.get('section', '')}\n{r.get('content', '')}" for r in records]
+        bm25.fit(corpus_texts)
+        bm25_scores = bm25.score(query)
+
+        bm25_ranked: List[Tuple[SearchResult, float]] = []
+        for r, score in zip(records, bm25_scores):
+            if score > 0.0:
+                sr = SearchResult(
+                    chunk_id=r["chunk_id"],
+                    doc_id=r["doc_id"],
+                    doc_title=r.get("doc_title", r["doc_id"]),
+                    section=r.get("section", "General"),
+                    content=r["content"],
+                    score=round(score, 4),
+                    metadata=r.get("metadata", {}),
+                )
+                bm25_ranked.append((sr, score))
+
+        bm25_ranked.sort(key=lambda x: x[1], reverse=True)
+
+        max_bm25 = max(bm25_scores) if bm25_scores else 0.0
+        # If no keywords matched in BM25 and dense similarity is below threshold, treat as out of domain
+        if max_bm25 == 0.0 and (not dense_ranked or dense_ranked[0][1] < 0.15):
+            return []
+
+        if not dense_ranked and not bm25_ranked:
+            return []
+
+        # 3. Reciprocal Rank Fusion (RRF)
+        fused = reciprocal_rank_fusion(
+            ranked_lists=[dense_ranked, bm25_ranked],
+            weights=[alpha, 1.0 - alpha],
+            top_k=top_k * 2 if use_mmr else top_k,
+        )
+
+        # 4. Optional Maximal Marginal Relevance (MMR) for diversity
+        if use_mmr and len(fused) > top_k:
+            candidate_vectors = [
+                next((r.get("embedding", []) for r in records if r["chunk_id"] == c.chunk_id), [])
+                for c in fused
+            ]
+            fused = maximal_marginal_relevance(
+                query_vector=query_vector,
+                candidate_chunks=fused,
+                candidate_vectors=candidate_vectors,
+                top_k=top_k,
+            )
+
+        return fused[:top_k]
+
     def list_indexed_documents(self) -> List[Dict[str, Any]]:
         """Return list of all documents currently indexed in S3 Vectors."""
         catalog = self._get_catalog()

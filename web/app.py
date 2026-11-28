@@ -1,7 +1,7 @@
 """
-GroundedOps - Interactive Web Dashboard (Streamlit).
-Evidence-based AI Knowledge Retrieval System powered by Amazon Bedrock (Amazon Nova)
-and serverless S3 Vectors.
+GroundedOps - Interactive Web Dashboard & Chat Assistant (Streamlit).
+Evidence-based AI Knowledge Retrieval System powered by Amazon Bedrock (Amazon Nova),
+serverless S3 Vectors, and BM25 Hybrid Search.
 """
 
 import os
@@ -56,12 +56,6 @@ st.markdown(
         font-weight: 600;
         font-size: 0.8rem;
     }
-    .metric-box {
-        background: #F1F5F9;
-        border-radius: 8px;
-        padding: 10px;
-        text-align: center;
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -91,7 +85,7 @@ st.sidebar.title("Configuration")
 mock_mode = st.sidebar.checkbox(
     "Offline / Mock Mode",
     value=os.environ.get("MOCK_BEDROCK", "true").lower() == "true",
-    help="Runs pipeline using local embeddings & mocks when AWS Bedrock credentials are not present.",
+    help="Runs pipeline using local embeddings & mocks when live AWS Bedrock credentials are not present.",
 )
 
 nova_model = st.sidebar.selectbox(
@@ -102,22 +96,39 @@ nova_model = st.sidebar.selectbox(
         "amazon.nova-pro-v1:0",
     ],
     index=0,
-    help="Select the Amazon Bedrock foundation model for grounded reasoning.",
+    help="Select foundation model for grounded generation.",
+)
+
+search_mode = st.sidebar.radio(
+    "Retrieval Engine",
+    options=["hybrid", "dense"],
+    format_func=lambda x: "⚡ Hybrid (BM25 + S3 Vectors RRF)" if x == "hybrid" else "🎯 Dense Vectors Only",
+    help="Hybrid fuses keyword lexical precision (BM25) with semantic embeddings.",
+)
+
+use_mmr = st.sidebar.checkbox(
+    "MMR Diversity Filter",
+    value=True,
+    help="Maximal Marginal Relevance suppresses duplicate chunks from the same section.",
 )
 
 top_k = st.sidebar.slider("Top-K Retrieved Chunks", min_value=1, max_value=8, value=4)
 sim_threshold = st.sidebar.slider(
-    "Minimum Similarity Threshold", min_value=0.1, max_value=0.8, value=0.25, step=0.05
+    "Minimum Similarity Threshold", min_value=0.05, max_value=0.5, value=0.10, step=0.05
 )
+
+if st.sidebar.button("🧹 Clear Conversation History"):
+    st.session_state.chat_history = []
+    st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.markdown(
     """
     **Architecture Highlights:**
-    - ⚡ **Amazon Bedrock**: Amazon Nova Micro/Lite
-    - 📦 **S3 Vectors**: Serverless vector store
-    - 🔒 **Amazon Cognito & IAM**: Zero-trust auth
-    - 🌐 **Amazon API Gateway**: Serverless endpoints
+    - ⚡ **Amazon Bedrock**: Amazon Nova
+    - 🔍 **Hybrid Search**: BM25 + S3 Vectors
+    - 📦 **Zero-Cost Storage**: Native S3
+    - 🔒 **Amazon Cognito & IAM**: Zero-Trust
     """
 )
 
@@ -132,10 +143,64 @@ pipeline = load_pipeline(model_id=nova_model, mock_mode=mock_mode)
 pipeline.top_k = top_k
 pipeline.similarity_threshold = sim_threshold
 
-tabs = st.tabs(["🔍 Knowledge Search", "📤 Document Ingestion", "📊 S3 Vectors Index & Stats"])
+# Initialize chat history in session state
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+tabs = st.tabs(["💬 Conversational Assistant", "🔍 Single Query & Inspector", "📤 Document Ingestion", "📊 S3 Vectors Index & Stats"])
 
 with tabs[0]:
-    st.subheader("Query Internal Documentation")
+    st.subheader("Chat with Operational Documentation")
+    st.caption("Ask questions about database failovers, Kubernetes incidents, microservices specs, and SOC-2 standards.")
+
+    # Render previous messages
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if "citations" in msg and msg["citations"]:
+                with st.expander(f"📑 Verified Citations ({len(msg['citations'])})"):
+                    for c in msg["citations"]:
+                        st.markdown(
+                            f"**[{c['citation_id']}] {c['doc_title']}** - Section: `{c['section']}` (Score: `{c['score']}`)\n"
+                            f"> {c['excerpt']}"
+                        )
+
+    # Chat input
+    if prompt := st.chat_input("Ask a technical or operational question..."):
+        # Display user message
+        st.chat_message("user").markdown(prompt)
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+
+        # Run RAG query with conversational history
+        with st.chat_message("assistant"):
+            with st.spinner("Retrieving evidence via S3 Vectors & Amazon Nova..."):
+                res = pipeline.query(
+                    question=prompt,
+                    top_k=top_k,
+                    search_mode=search_mode,
+                    use_mmr=use_mmr,
+                    chat_history=st.session_state.chat_history[:-1],
+                )
+
+            st.markdown(res["answer"])
+            citations = res.get("citations", [])
+            if citations:
+                with st.expander(f"📑 Verified Citations ({len(citations)})"):
+                    for c in citations:
+                        st.markdown(
+                            f"**[{c['citation_id']}] {c['doc_title']}** - Section: `{c['section']}` (Score: `{c['score']}`)\n"
+                            f"> {c['excerpt']}"
+                        )
+
+            # Store assistant response in history
+            st.session_state.chat_history.append({
+                "role": "assistant",
+                "content": res["answer"],
+                "citations": citations,
+            })
+
+with tabs[1]:
+    st.subheader("Deep-Dive Query & Citation Inspector")
 
     sample_questions = [
         "What are the steps to execute a failover on the Aurora PostgreSQL cluster?",
@@ -148,14 +213,19 @@ with tabs[0]:
     default_q = "" if selected_sample == "-- Select --" else selected_sample
 
     user_query = st.text_input(
-        "Ask a technical question:",
+        "Enter question:",
         value=default_q,
         placeholder="e.g. What is the command to drain a Kubernetes worker node?",
     )
 
-    if st.button("Retrieve Grounded Answer", type="primary") and user_query:
-        with st.spinner("Embedding query, querying S3 Vectors, and synthesizing answer with Amazon Nova..."):
-            res = pipeline.query(user_query, top_k=top_k)
+    if st.button("Inspect Retrieval & Citations", type="primary") and user_query:
+        with st.spinner("Executing query..."):
+            res = pipeline.query(
+                user_query,
+                top_k=top_k,
+                search_mode=search_mode,
+                use_mmr=use_mmr,
+            )
 
         col1, col2 = st.columns([2, 1])
 
@@ -171,7 +241,7 @@ with tabs[0]:
                         f"""
                         <div class="citation-card">
                             <strong>Citation #{c['citation_id']}:</strong> {c['doc_title']} 
-                            <span class="score-badge">Similarity: {c['score']}</span><br>
+                            <span class="score-badge">Score: {c['score']}</span><br>
                             <em>Section:</em> <code>{c['section']}</code> | <em>Chunk:</em> <code>{c['chunk_id']}</code><br>
                             <p style="margin-top: 6px; color: #475569;">"{c['excerpt']}"</p>
                         </div>
@@ -182,25 +252,26 @@ with tabs[0]:
                 st.warning("No verified citations found for this query.")
 
         with col2:
-            st.markdown("### ⏱️ Performance Metrics")
+            st.markdown("### ⏱️ Performance & Telemetry")
             metrics = res["metrics"]
             st.metric("Total Latency", f"{metrics['total_latency_ms']:.1f} ms")
+            st.metric("Retrieval Engine", f"{metrics['search_mode'].upper()}")
             st.metric("Query Embedding", f"{metrics['embedding_latency_ms']:.1f} ms")
-            st.metric("S3 Vector Search", f"{metrics['retrieval_latency_ms']:.1f} ms")
+            st.metric("Vector/BM25 Search", f"{metrics['retrieval_latency_ms']:.1f} ms")
             st.metric("Amazon Nova Synthesis", f"{metrics['generation_latency_ms']:.1f} ms")
             st.metric("Confidence Score", f"{res['confidence_score']:.2f}")
 
-            with st.expander("Retrieved Context Chunks"):
+            with st.expander("Retrieved Raw Chunks"):
                 for ctx in res.get("retrieved_context", []):
                     st.write(f"**{ctx['doc_title']} - {ctx['section']}** (Score: {ctx['score']})")
                     st.text(ctx["content"][:300] + "...")
 
-with tabs[1]:
+with tabs[2]:
     st.subheader("Ingest New Documentation")
     doc_id_input = st.text_input("Document Identifier (e.g. `redis_cluster_runbook.md`)")
     doc_content_input = st.text_area("Document Content (Markdown / Text)", height=250)
 
-    if st.button("Chunk, Embed & Store in S3 Vectors") and doc_id_input and doc_content_input:
+    if st.button("Chunk, Embed & Index into S3 Vectors") and doc_id_input and doc_content_input:
         with st.spinner("Processing document..."):
             result = pipeline.ingest_document(
                 doc_id=doc_id_input,
@@ -210,7 +281,7 @@ with tabs[1]:
         st.success(f"Successfully indexed '{doc_id_input}' into S3 Vectors!")
         st.json(result)
 
-with tabs[2]:
+with tabs[3]:
     st.subheader("S3 Vectors Status & Catalog")
     stats = pipeline.get_pipeline_stats()
     col_a, col_b, col_c = st.columns(3)
@@ -220,6 +291,7 @@ with tabs[2]:
 
     st.write(f"**Storage Bucket**: `{stats['vector_bucket']}`")
     st.write(f"**Embedding Model**: `{stats['embedding_model']}`")
+    st.write(f"**Retrieval Engine**: `{stats.get('retrieval_engine', 'Hybrid (BM25 + S3 Vectors)')}`")
 
     if stats["documents"]:
         st.dataframe(stats["documents"], use_container_width=True)

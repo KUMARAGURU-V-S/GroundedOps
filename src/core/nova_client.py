@@ -2,14 +2,15 @@
 Amazon Bedrock Amazon Nova Client for GroundedOps.
 Orchestrates grounded response generation with Amazon Nova models
 (Nova Micro, Nova Lite, Nova Pro) using Bedrock's Converse API.
-Enforces strict hallucination prevention and evidence-based citation extraction.
+Enforces strict hallucination prevention, evidence-based citation extraction,
+multi-turn conversational memory, and real-time streaming output.
 """
 
 import json
 import os
 import re
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 import boto3
 from botocore.config import Config
 
@@ -114,9 +115,12 @@ class AmazonNovaClient:
             self.client = None
 
     def _build_context_prompt(
-        self, query: str, chunks: List[SearchResult]
-    ) -> str:
-        """Construct structured context blocks from retrieved S3 vector chunks."""
+        self,
+        query: str,
+        chunks: List[SearchResult],
+        chat_history: Optional[List[Dict[str, str]]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Construct structured conversation messages including context blocks and history."""
         context_blocks = []
         for i, c in enumerate(chunks, 1):
             block = (
@@ -130,13 +134,33 @@ class AmazonNovaClient:
             context_blocks.append(block)
 
         joined_context = "\n".join(context_blocks)
-        user_message = (
+        user_message_text = (
             f"Context Documents:\n"
             f"{joined_context}\n\n"
             f"User Question: {query}\n\n"
             f"Please provide an accurate, evidence-grounded response citing the context above."
         )
-        return user_message
+
+        messages: List[Dict[str, Any]] = []
+
+        # Append prior conversation history turns if provided
+        if chat_history:
+            for turn in chat_history[-6:]:  # Keep recent context window
+                role = turn.get("role", "user")
+                content = turn.get("content", "")
+                if role in ["user", "assistant"] and content:
+                    messages.append({
+                        "role": role,
+                        "content": [{"text": content}],
+                    })
+
+        # Append current user prompt with context
+        messages.append({
+            "role": "user",
+            "content": [{"text": user_message_text}],
+        })
+
+        return messages
 
     def _extract_citations(
         self, answer: str, chunks: List[SearchResult]
@@ -145,14 +169,10 @@ class AmazonNovaClient:
         Cross-reference retrieved chunks with generated response to assemble citations.
         """
         citations: List[Citation] = []
-        chunk_map = {c.chunk_id: c for c in chunks}
-
-        # Check for citation references in answer: e.g. Ref: #chunk_id or [Doc: ...]
         seen_chunks = set()
         citation_counter = 1
 
         for c in chunks:
-            # Check if chunk_id, section or title is mentioned in text
             if (
                 c.chunk_id in answer
                 or f"Ref: #{c.chunk_id}" in answer
@@ -172,7 +192,6 @@ class AmazonNovaClient:
                     )
                     citation_counter += 1
 
-        # If model used context without explicit chunk ID tags, include the top matching chunks
         if not citations and chunks and "not contain sufficient information" not in answer:
             for c in chunks[:2]:
                 citations.append(
@@ -210,6 +229,7 @@ class AmazonNovaClient:
         self,
         query: str,
         chunks: List[SearchResult],
+        chat_history: Optional[List[Dict[str, str]]] = None,
     ) -> GroundedResponse:
         """
         Invoke Amazon Bedrock Amazon Nova to synthesize a grounded response.
@@ -218,7 +238,6 @@ class AmazonNovaClient:
 
         start_time = time.perf_counter()
 
-        # If no chunks were retrieved or highest similarity is below threshold
         if not chunks:
             latency = (time.perf_counter() - start_time) * 1000.0
             return GroundedResponse(
@@ -231,21 +250,13 @@ class AmazonNovaClient:
                 latency_ms=latency,
             )
 
-        user_content = self._build_context_prompt(query, chunks)
+        messages = self._build_context_prompt(query, chunks, chat_history)
 
         if self.mock_mode:
             answer = self._mock_generate(query, chunks)
         else:
             try:
-                # Prefer Bedrock Converse API for Nova models
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [{"text": user_content}],
-                    }
-                ]
                 system = [{"text": SYSTEM_PROMPT}]
-
                 response = self.client.converse(
                     modelId=self.model_id,
                     messages=messages,
@@ -268,14 +279,14 @@ class AmazonNovaClient:
                     f"Converse API call failed for {self.model_id}: {e}. Retrying with invoke_model payload."
                 )
                 try:
-                    # Fallback to invoke_model with Nova standard payload
+                    last_user_text = messages[-1]["content"][0]["text"]
                     body = json.dumps(
                         {
                             "system": [{"text": SYSTEM_PROMPT}],
                             "messages": [
                                 {
                                     "role": "user",
-                                    "content": [{"text": user_content}],
+                                    "content": [{"text": last_user_text}],
                                 }
                             ],
                             "inferenceConfig": {
@@ -321,3 +332,49 @@ class AmazonNovaClient:
             retrieved_chunks_count=len(chunks),
             latency_ms=latency,
         )
+
+    def stream_grounded_answer(
+        self,
+        query: str,
+        chunks: List[SearchResult],
+        chat_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Iterator[str]:
+        """
+        Stream grounded answer tokens in real-time from Amazon Bedrock ConverseStream API.
+        """
+        if not chunks:
+            yield "The internal documentation does not contain sufficient information to answer this question."
+            return
+
+        if self.mock_mode:
+            full_text = self._mock_generate(query, chunks)
+            words = full_text.split(" ")
+            for w in words:
+                yield w + " "
+            return
+
+        messages = self._build_context_prompt(query, chunks, chat_history)
+        system = [{"text": SYSTEM_PROMPT}]
+
+        try:
+            response = self.client.converse_stream(
+                modelId=self.model_id,
+                messages=messages,
+                system=system,
+                inferenceConfig={
+                    "temperature": self.temperature,
+                    "maxTokens": self.max_tokens,
+                },
+            )
+
+            stream = response.get("stream")
+            if stream:
+                for event in stream:
+                    if "contentBlockDelta" in event:
+                        delta = event["contentBlockDelta"].get("delta", {})
+                        text = delta.get("text", "")
+                        if text:
+                            yield text
+        except Exception as e:
+            logger.error(f"Error during stream generation: {e}")
+            yield f"\n[Error streaming response from Amazon Nova: {str(e)}]"

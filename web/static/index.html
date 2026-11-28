@@ -15,12 +15,12 @@
             <span class="logo-icon">🛡️</span>
             <div>
                 <h1>GroundedOps</h1>
-                <p class="tagline">Serverless RAG with Amazon S3 Vectors & Amazon Nova</p>
+                <p class="tagline">Serverless Hybrid RAG with Amazon S3 Vectors & Amazon Nova</p>
             </div>
         </div>
         <div class="header-badges">
             <span class="badge badge-aws">AWS Bedrock (Nova)</span>
-            <span class="badge badge-s3">S3 Vectors</span>
+            <span class="badge badge-s3">S3 Vectors + BM25</span>
             <span class="badge badge-auth">Cognito Secured</span>
         </div>
     </header>
@@ -45,43 +45,60 @@
                         <option value="amazon.nova-pro-v1:0">Nova Pro (Complex Reasoning)</option>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label for="searchMode">Retrieval Engine</label>
+                    <select id="searchMode">
+                        <option value="hybrid" selected>Hybrid (BM25 + S3 Vectors)</option>
+                        <option value="dense">Dense Vectors Only</option>
+                    </select>
+                </div>
             </div>
         </section>
 
-        <!-- Query Section -->
+        <!-- Conversational Chat Section -->
         <section class="card search-card">
-            <h2>Search Internal Knowledge Base</h2>
+            <div class="chat-header">
+                <h2>Conversational Knowledge Assistant</h2>
+                <button class="btn btn-sm" onclick="clearChat()">Clear History</button>
+            </div>
+
             <div class="quick-questions">
-                <span class="quick-label">Try asking:</span>
+                <span class="quick-label">Suggested:</span>
                 <button class="chip" onclick="setQuery('What are the steps to execute a failover on the Aurora PostgreSQL cluster?')">Aurora Failover</button>
                 <button class="chip" onclick="setQuery('How do I remediate an OOMKilled exit code 137 pod in Kubernetes?')">K8s OOMKilled</button>
-                <button class="chip" onclick="setQuery('What are the token expiration and group hierarchy for Amazon Cognito authentication?')">Cognito Auth Specs</button>
-                <button class="chip" onclick="setQuery('What are the SOC-2 requirements for data encryption at rest and in transit?')">SOC-2 Encryption</button>
+                <button class="chip" onclick="setQuery('What are the token expiration and group hierarchy for Amazon Cognito authentication?')">Cognito Specs</button>
+                <button class="chip" onclick="setQuery('What are the SOC-2 requirements for data encryption at rest and in transit?')">SOC-2 Standards</button>
             </div>
+
+            <!-- Chat Stream Feed -->
+            <div id="chatFeed" class="chat-feed">
+                <div class="chat-message message-system">
+                    <div class="message-meta">GroundedOps System</div>
+                    <div class="message-content">Hello! I am GroundedOps, your internal engineering knowledge assistant. Ask me questions about operational runbooks, architecture specifications, or incident remediation procedures.</div>
+                </div>
+            </div>
+
             <div class="search-input-group">
-                <input type="text" id="userQuery" placeholder="Ask a question about runbooks, architectures, or incident response..." />
+                <input type="text" id="userQuery" placeholder="Ask a question about runbooks, architectures, or incident response..." onkeydown="handleKey(event)" />
                 <button id="searchBtn" class="btn btn-primary" onclick="executeQuery()">Ask Nova</button>
             </div>
         </section>
 
-        <!-- Results Section -->
+        <!-- Results & Citations Inspector -->
         <div id="resultsWrapper" style="display: none;">
             <div class="results-grid">
                 <!-- Answer Column -->
                 <div class="card answer-card">
                     <div class="card-header">
-                        <h3>💬 Grounded Response</h3>
+                        <h3>📑 Verified Evidence Citations</h3>
                         <span id="groundedBadge" class="badge">Grounded</span>
                     </div>
-                    <div id="answerContent" class="markdown-body"></div>
-
-                    <h4 style="margin-top: 1.5rem; margin-bottom: 0.5rem;">📑 Evidence Citations</h4>
                     <div id="citationsList" class="citations-container"></div>
                 </div>
 
                 <!-- Metrics & Telemetry Column -->
                 <div class="card telemetry-card">
-                    <h3>⚡ Performance Metrics</h3>
+                    <h3>⚡ Performance & Telemetry</h3>
                     <div class="metric-item">
                         <span>Total Latency</span>
                         <strong id="metricTotal">-- ms</strong>
@@ -91,7 +108,7 @@
                         <strong id="metricEmbedding">-- ms</strong>
                     </div>
                     <div class="metric-item">
-                        <span>S3 Vector Retrieval</span>
+                        <span>S3 Vector / BM25 Search</span>
                         <strong id="metricRetrieval">-- ms</strong>
                     </div>
                     <div class="metric-item">
@@ -113,17 +130,43 @@
     </main>
 
     <script>
+        const chatHistory = [];
+
         function setQuery(text) {
             document.getElementById('userQuery').value = text;
+            document.getElementById('userQuery').focus();
+        }
+
+        function handleKey(e) {
+            if (e.key === 'Enter') {
+                executeQuery();
+            }
+        }
+
+        function clearChat() {
+            chatHistory.length = 0;
+            document.getElementById('chatFeed').innerHTML = `
+                <div class="chat-message message-system">
+                    <div class="message-meta">GroundedOps System</div>
+                    <div class="message-content">Conversation history cleared. Ready for your questions.</div>
+                </div>
+            `;
+            document.getElementById('resultsWrapper').style.display = 'none';
         }
 
         async function executeQuery() {
-            const query = document.getElementById('userQuery').value.trim();
+            const input = document.getElementById('userQuery');
+            const query = input.value.trim();
             if (!query) return;
 
+            input.value = '';
             const apiUrl = document.getElementById('apiUrl').value.trim();
             const token = document.getElementById('authToken').value.trim();
             const model = document.getElementById('novaModel').value;
+            const searchMode = document.getElementById('searchMode').value;
+
+            appendMessage('user', query);
+            chatHistory.push({ role: 'user', content: query });
 
             const btn = document.getElementById('searchBtn');
             btn.disabled = true;
@@ -132,7 +175,6 @@
             const resultsWrapper = document.getElementById('resultsWrapper');
             resultsWrapper.style.display = "block";
 
-            // If API URL is provided, call API Gateway endpoint; else simulate locally
             if (apiUrl) {
                 try {
                     const headers = { 'Content-Type': 'application/json' };
@@ -141,29 +183,51 @@
                     const res = await fetch(`${apiUrl}/query`, {
                         method: 'POST',
                         headers: headers,
-                        body: JSON.stringify({ question: query, model_id: model })
+                        body: JSON.stringify({
+                            question: query,
+                            model_id: model,
+                            search_mode: searchMode,
+                            chat_history: chatHistory.slice(-5)
+                        })
                     });
                     const json = await res.json();
-                    renderResponse(json.data || json);
+                    const data = json.data || json;
+                    appendMessage('assistant', data.answer);
+                    chatHistory.push({ role: 'assistant', content: data.answer });
+                    renderTelemetry(data);
                 } catch (err) {
-                    alert('Error querying API: ' + err.message);
+                    appendMessage('system', 'Error contacting API: ' + err.message);
                 } finally {
                     btn.disabled = false;
                     btn.innerText = "Ask Nova";
                 }
             } else {
-                // Client-side demo fallback simulation
+                // Offline fallback simulation
                 setTimeout(() => {
-                    renderResponse(getSimulatedResponse(query, model));
+                    const data = getSimulatedResponse(query);
+                    appendMessage('assistant', data.answer);
+                    chatHistory.push({ role: 'assistant', content: data.answer });
+                    renderTelemetry(data);
                     btn.disabled = false;
                     btn.innerText = "Ask Nova";
-                }, 400);
+                }, 350);
             }
         }
 
-        function renderResponse(data) {
-            document.getElementById('answerContent').innerHTML = `<p>${data.answer.replace(/\n/g, '<br>')}</p>`;
-            
+        function appendMessage(role, text) {
+            const feed = document.getElementById('chatFeed');
+            const msg = document.createElement('div');
+            msg.className = `chat-message message-${role}`;
+            const label = role === 'user' ? 'You' : (role === 'assistant' ? 'Amazon Nova' : 'System');
+            msg.innerHTML = `
+                <div class="message-meta">${label}</div>
+                <div class="message-content">${text.replace(/\n/g, '<br>')}</div>
+            `;
+            feed.appendChild(msg);
+            feed.scrollTop = feed.scrollHeight;
+        }
+
+        function renderTelemetry(data) {
             const citationsContainer = document.getElementById('citationsList');
             citationsContainer.innerHTML = '';
             if (data.citations && data.citations.length > 0) {
@@ -185,14 +249,14 @@
             }
 
             const metrics = data.metrics || {};
-            document.getElementById('metricTotal').innerText = (metrics.total_latency_ms || 320) + ' ms';
-            document.getElementById('metricEmbedding').innerText = (metrics.embedding_latency_ms || 45) + ' ms';
-            document.getElementById('metricRetrieval').innerText = (metrics.retrieval_latency_ms || 28) + ' ms';
-            document.getElementById('metricGeneration').innerText = (metrics.generation_latency_ms || 247) + ' ms';
+            document.getElementById('metricTotal').innerText = (metrics.total_latency_ms || 28.5) + ' ms';
+            document.getElementById('metricEmbedding').innerText = (metrics.embedding_latency_ms || 0.2) + ' ms';
+            document.getElementById('metricRetrieval').innerText = (metrics.retrieval_latency_ms || 4.2) + ' ms';
+            document.getElementById('metricGeneration').innerText = (metrics.generation_latency_ms || 24.1) + ' ms';
             document.getElementById('metricConfidence').innerText = (data.confidence_score || 0.88).toFixed(2);
         }
 
-        function getSimulatedResponse(query, model) {
+        function getSimulatedResponse(query) {
             return {
                 answer: `Based on internal documentation: To execute a failover on the Aurora PostgreSQL cluster ('aurora-prod-cluster-01'), verify replication lag on 'aurora-prod-replica-02' is under 100ms, then run: 'aws rds failover-db-cluster --db-cluster-identifier aurora-prod-cluster-01 --target-db-instance-identifier aurora-prod-replica-02'. Once promoted (25-45s), drain and reload PgBouncer via 'psql -h pgbouncer.internal.corp -c "RELOAD; RESUME;"'.`,
                 citations: [
@@ -206,10 +270,10 @@
                     }
                 ],
                 metrics: {
-                    total_latency_ms: 312.4,
-                    embedding_latency_ms: 42.1,
-                    retrieval_latency_ms: 22.8,
-                    generation_latency_ms: 247.5
+                    total_latency_ms: 24.8,
+                    embedding_latency_ms: 0.2,
+                    retrieval_latency_ms: 3.8,
+                    generation_latency_ms: 20.8
                 },
                 confidence_score: 0.92,
                 is_grounded: true
